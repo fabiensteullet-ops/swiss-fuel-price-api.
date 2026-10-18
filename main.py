@@ -13,7 +13,7 @@ def home():
     return {
         "app": "Swiss Fuel Price",
         "status": "online",
-        "message": "Bienvenue sur l'API Swiss Fuel Price"
+        "message": "Bienvenue sur Swiss Fuel Price"
     }
 
 
@@ -27,5 +27,5 @@ def list_stations():
     return {
         "items": [],
         "total": 0,
-        "message": "La base des stations sera connectée à l'étape suivante."
+        "message": "La base des stations sera connectée ensuite."
     }
