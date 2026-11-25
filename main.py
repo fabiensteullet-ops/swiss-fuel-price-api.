@@ -1,4 +1,3 @@
-
 import os
 import hmac
 import logging
@@ -8,19 +7,20 @@ from psycopg.rows import dict_row
 from fastapi import FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import Literal
+from decimal import Decimal
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("swiss-fuel-price")
 
-VERSION = "0.6.0"
-
 app = FastAPI(
     title="Swiss Fuel Price API",
     description="API suisse de comparaison des prix du carburant",
-    version=VERSION,
+    version="0.7.0",
 )
 
+
+# DATABASE
 
 def get_database_url():
     url = os.getenv("DATABASE_URL")
@@ -34,12 +34,16 @@ def get_database_url():
     return url
 
 
-def init_db():
-    with psycopg.connect(
+def get_connection():
+    return psycopg.connect(
         get_database_url(),
+        row_factory=dict_row,
         connect_timeout=10
-    ) as conn:
+    )
 
+
+def init_db():
+    with get_connection() as conn:
         with conn.cursor() as cur:
 
             cur.execute("""
@@ -80,6 +84,46 @@ def init_db():
                 stations_osm_id_unique
             """)
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS fuel_prices (
+                    id BIGSERIAL PRIMARY KEY,
+                    station_id INTEGER NOT NULL
+                        REFERENCES stations(id),
+                    fuel_type VARCHAR(20) NOT NULL
+                        CHECK (
+                            fuel_type IN (
+                                'SP95', 'SP98', 'DIESEL'
+                            )
+                        ),
+                    price NUMERIC(5,3) NOT NULL
+                        CHECK (
+                            price >= 0.50
+                            AND price <= 5.00
+                        ),
+                    currency VARCHAR(3)
+                        NOT NULL DEFAULT 'CHF',
+                    source VARCHAR(30)
+                        NOT NULL DEFAULT 'community',
+                    reported_at TIMESTAMPTZ
+                        NOT NULL DEFAULT NOW()
+                )
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS
+                fuel_prices_station_idx
+                ON fuel_prices(
+                    station_id,
+                    fuel_type,
+                    reported_at DESC,
+                    id DESC
+                )
+            """)
+
+            logger.info("Database ready")
+
+
+# MODELS
 
 class StationImport(BaseModel):
 
@@ -133,11 +177,32 @@ class ImportBatch(BaseModel):
     )
 
 
+class PriceReport(BaseModel):
+
+    station_id: int = Field(gt=0)
+
+    fuel_type: Literal[
+        "SP95",
+        "SP98",
+        "DIESEL"
+    ]
+
+    price: Decimal = Field(
+        ge=Decimal("0.50"),
+        le=Decimal("5.00"),
+        max_digits=5,
+        decimal_places=3
+    )
+
+
+# HOME
+
 @app.get("/")
 def home():
+
     return {
         "app": "Swiss Fuel Price",
-        "version": VERSION,
+        "version": "0.7.0",
         "status": "online",
         "message": "Bienvenue sur Swiss Fuel Price"
     }
@@ -145,18 +210,17 @@ def home():
 
 @app.get("/health")
 def health():
+
     return {"status": "ok"}
 
+
+# DATABASE HEALTH
 
 @app.get("/api/v1/database/health")
 def database_health():
 
     try:
-        with psycopg.connect(
-            get_database_url(),
-            connect_timeout=10
-        ) as conn:
-
+        with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 cur.fetchone()
@@ -177,18 +241,15 @@ def database_health():
         )
 
 
+# LIST STATIONS
+
 @app.get("/api/v1/stations")
 def list_stations():
 
     try:
         init_db()
 
-        with psycopg.connect(
-            get_database_url(),
-            row_factory=dict_row,
-            connect_timeout=10
-        ) as conn:
-
+        with get_connection() as conn:
             with conn.cursor() as cur:
 
                 cur.execute("""
@@ -224,32 +285,28 @@ def list_stations():
         )
 
 
+# COUNT STATIONS
+
 @app.get("/api/v1/stations/count")
 def count_stations():
 
     try:
         init_db()
 
-        with psycopg.connect(
-            get_database_url(),
-            connect_timeout=10
-        ) as conn:
-
+        with get_connection() as conn:
             with conn.cursor() as cur:
 
-                cur.execute(
-                    "SELECT COUNT(*) FROM stations"
-                )
+                cur.execute("""
+                    SELECT COUNT(*) AS total
+                    FROM stations
+                """)
 
-                total = cur.fetchone()[0]
+                total = cur.fetchone()["total"]
 
         return {
             "status": "ok",
             "total": total
         }
-
-    except HTTPException:
-        raise
 
     except Exception:
 
@@ -261,23 +318,38 @@ def count_stations():
         )
 
 
+# GPS NEARBY STATIONS
+
 @app.get("/api/v1/stations/nearby")
 def nearby_stations(
-    latitude: float = Query(..., ge=-90, le=90),
-    longitude: float = Query(..., ge=-180, le=180),
-    radius_km: float = Query(10, ge=1, le=100),
-    limit: int = Query(50, ge=1, le=200),
-    brand: str | None = Query(None, max_length=100)
+
+    latitude: float = Query(
+        ge=-90, le=90
+    ),
+
+    longitude: float = Query(
+        ge=-180, le=180
+    ),
+
+    radius_km: float = Query(
+        default=10,
+        ge=1,
+        le=100
+    ),
+
+    limit: int = Query(
+        default=50,
+        ge=1,
+        le=200
+    ),
+
+    brand: str | None = None
 ):
 
     try:
+        init_db()
 
-        with psycopg.connect(
-            get_database_url(),
-            row_factory=dict_row,
-            connect_timeout=10
-        ) as conn:
-
+        with get_connection() as conn:
             with conn.cursor() as cur:
 
                 cur.execute("""
@@ -292,31 +364,28 @@ def nearby_stations(
                             latitude,
                             longitude,
 
-                            6371.0088 * 2 * ASIN(
+                            6371.0 * 2 * ASIN(
                                 SQRT(
                                     LEAST(
                                         1.0,
-                                        GREATEST(
-                                            0.0,
-                                            POWER(
-                                                SIN(
-                                                    RADIANS(
-                                                        latitude - %s
-                                                    ) / 2
-                                                ), 2
-                                            )
-                                            +
-                                            COS(RADIANS(%s))
-                                            *
-                                            COS(RADIANS(latitude))
-                                            *
-                                            POWER(
-                                                SIN(
-                                                    RADIANS(
-                                                        longitude - %s
-                                                    ) / 2
-                                                ), 2
-                                            )
+                                        POWER(
+                                            SIN(
+                                                RADIANS(
+                                                    latitude - %s
+                                                ) / 2
+                                            ), 2
+                                        )
+                                        +
+                                        COS(RADIANS(%s))
+                                        *
+                                        COS(RADIANS(latitude))
+                                        *
+                                        POWER(
+                                            SIN(
+                                                RADIANS(
+                                                    longitude - %s
+                                                ) / 2
+                                            ), 2
                                         )
                                     )
                                 )
@@ -324,18 +393,30 @@ def nearby_stations(
 
                         FROM stations
 
-                        WHERE latitude BETWEEN -90 AND 90
-                        AND longitude BETWEEN -180 AND 180
+                        WHERE latitude IS NOT NULL
+                        AND longitude IS NOT NULL
+
                         AND (
                             %s::text IS NULL
-                            OR LOWER(brand) = LOWER(%s::text)
+                            OR brand ILIKE %s
                         )
                     )
 
-                    SELECT *
+                    SELECT
+                        id, name, brand,
+                        address, postal_code,
+                        city, latitude, longitude,
+                        ROUND(
+                            distance_km::numeric, 3
+                        )::double precision
+                        AS distance_km
+
                     FROM distances
+
                     WHERE distance_km <= %s
-                    ORDER BY distance_km ASC, id ASC
+
+                    ORDER BY distance_km, id
+
                     LIMIT %s
 
                 """, (
@@ -349,11 +430,6 @@ def nearby_stations(
                 ))
 
                 items = cur.fetchall()
-
-        for station in items:
-            station["distance_km"] = round(
-                station["distance_km"], 3
-            )
 
         return {
             "status": "ok",
@@ -380,13 +456,17 @@ def nearby_stations(
 
         raise HTTPException(
             status_code=500,
-            detail="Erreur recherche stations GPS"
+            detail="Erreur recherche GPS"
         )
 
 
+# STATION IMPORT
+
 @app.post("/api/v1/import/stations")
 def import_stations(
+
     batch: ImportBatch,
+
     x_import_key: str = Header(default="")
 ):
 
@@ -412,11 +492,7 @@ def import_stations(
     try:
         init_db()
 
-        with psycopg.connect(
-            get_database_url(),
-            connect_timeout=10
-        ) as conn:
-
+        with get_connection() as conn:
             with conn.cursor() as cur:
 
                 for station in batch.stations:
@@ -433,12 +509,15 @@ def import_stations(
                             latitude,
                             longitude
                         )
+
                         VALUES (
                             %s, %s, %s,
                             %s, %s, %s,
                             %s, %s, %s
                         )
+
                         ON CONFLICT (osm_type, osm_id)
+
                         DO UPDATE SET
                             name = EXCLUDED.name,
                             brand = EXCLUDED.brand,
@@ -447,6 +526,7 @@ def import_stations(
                             city = EXCLUDED.city,
                             latitude = EXCLUDED.latitude,
                             longitude = EXCLUDED.longitude
+
                     """, (
                         station.osm_id,
                         station.osm_type,
@@ -459,23 +539,16 @@ def import_stations(
                         station.longitude
                     ))
 
-                cur.execute(
-                    "SELECT COUNT(*) FROM stations"
-                )
+                cur.execute("""
+                    SELECT COUNT(*) AS total
+                    FROM stations
+                """)
 
-                total = cur.fetchone()[0]
-
-        imported = len(batch.stations)
-
-        logger.info(
-            "Lot traite : %s stations. Total : %s",
-            imported,
-            total
-        )
+                total = cur.fetchone()["total"]
 
         return {
             "status": "ok",
-            "imported": imported,
+            "imported": len(batch.stations),
             "total": total
         }
 
@@ -490,3 +563,349 @@ def import_stations(
             status_code=500,
             detail="Erreur importation PostgreSQL"
         )
+
+
+# STATION DETAILS
+
+@app.get("/api/v1/stations/{station_id}")
+def station_details(station_id: int):
+
+    init_db()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT
+                    id, name, brand,
+                    address, postal_code,
+                    city, latitude, longitude
+
+                FROM stations
+
+                WHERE id = %s
+
+            """, (station_id,))
+
+            station = cur.fetchone()
+
+            if not station:
+
+                raise HTTPException(
+                    status_code=404,
+                    detail="Station introuvable"
+                )
+
+            cur.execute("""
+                SELECT DISTINCT ON (fuel_type)
+
+                    fuel_type,
+                    price::double precision AS price,
+                    currency,
+                    source,
+                    reported_at
+
+                FROM fuel_prices
+
+                WHERE station_id = %s
+
+                ORDER BY
+                    fuel_type,
+                    reported_at DESC,
+                    id DESC
+
+            """, (station_id,))
+
+            prices = cur.fetchall()
+
+    return {
+        "status": "ok",
+        "station": station,
+        "prices": prices,
+        "attribution":
+            "© OpenStreetMap contributors"
+    }
+
+
+# COMMUNITY PRICE REPORT
+
+@app.post("/api/v1/prices", status_code=201)
+def report_price(report: PriceReport):
+
+    try:
+        init_db()
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    SELECT id, name
+                    FROM stations
+                    WHERE id = %s
+
+                """, (report.station_id,))
+
+                station = cur.fetchone()
+
+                if not station:
+
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Station introuvable"
+                    )
+
+                cur.execute("""
+                    INSERT INTO fuel_prices (
+                        station_id,
+                        fuel_type,
+                        price,
+                        currency,
+                        source
+                    )
+
+                    VALUES (
+                        %s, %s, %s,
+                        'CHF', 'community'
+                    )
+
+                    RETURNING
+                        id,
+                        station_id,
+                        fuel_type,
+                        price::double precision AS price,
+                        currency,
+                        source,
+                        reported_at
+
+                """, (
+                    report.station_id,
+                    report.fuel_type,
+                    report.price
+                ))
+
+                result = cur.fetchone()
+
+        return {
+            "status": "ok",
+            "message": "Prix enregistre",
+            "station": station["name"],
+            "verified": False,
+            "data": result
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+
+        logger.exception("Erreur enregistrement prix")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur enregistrement prix"
+        )
+
+
+# LATEST STATION PRICES
+
+@app.get("/api/v1/stations/{station_id}/prices")
+def station_prices(station_id: int):
+
+    init_db()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT id
+                FROM stations
+                WHERE id = %s
+
+            """, (station_id,))
+
+            if not cur.fetchone():
+
+                raise HTTPException(
+                    status_code=404,
+                    detail="Station introuvable"
+                )
+
+            cur.execute("""
+                SELECT DISTINCT ON (fuel_type)
+
+                    id,
+                    fuel_type,
+                    price::double precision AS price,
+                    currency,
+                    source,
+                    reported_at
+
+                FROM fuel_prices
+
+                WHERE station_id = %s
+
+                ORDER BY
+                    fuel_type,
+                    reported_at DESC,
+                    id DESC
+
+            """, (station_id,))
+
+            items = cur.fetchall()
+
+    return {
+        "status": "ok",
+        "station_id": station_id,
+        "total": len(items),
+        "items": items
+    }
+
+
+# PRICE HISTORY
+
+@app.get("/api/v1/stations/{station_id}/prices/history")
+def price_history(
+
+    station_id: int,
+
+    fuel_type: Literal[
+        "SP95", "SP98", "DIESEL"
+    ] | None = None,
+
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=1000
+    )
+):
+
+    init_db()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT id
+                FROM stations
+                WHERE id = %s
+
+            """, (station_id,))
+
+            if not cur.fetchone():
+
+                raise HTTPException(
+                    status_code=404,
+                    detail="Station introuvable"
+                )
+
+            cur.execute("""
+                SELECT
+                    id,
+                    fuel_type,
+                    price::double precision AS price,
+                    currency,
+                    source,
+                    reported_at
+
+                FROM fuel_prices
+
+                WHERE station_id = %s
+
+                AND (
+                    %s::text IS NULL
+                    OR fuel_type = %s
+                )
+
+                ORDER BY
+                    reported_at DESC,
+                    id DESC
+
+                LIMIT %s
+
+            """, (
+                station_id,
+                fuel_type,
+                fuel_type,
+                limit
+            ))
+
+            items = cur.fetchall()
+
+    return {
+        "status": "ok",
+        "station_id": station_id,
+        "fuel_type": fuel_type,
+        "total": len(items),
+        "items": items
+    }
+
+
+# PRICE STATISTICS
+
+@app.get("/api/v1/prices/stats")
+def price_stats():
+
+    init_db()
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+                SELECT COUNT(*) AS total
+                FROM fuel_prices
+            """)
+
+            total = cur.fetchone()["total"]
+
+            cur.execute("""
+                WITH latest AS (
+
+                    SELECT DISTINCT ON (
+                        station_id, fuel_type
+                    )
+                        station_id,
+                        fuel_type,
+                        price,
+                        reported_at
+
+                    FROM fuel_prices
+
+                    ORDER BY
+                        station_id,
+                        fuel_type,
+                        reported_at DESC,
+                        id DESC
+                )
+
+                SELECT
+                    fuel_type,
+                    COUNT(*) AS stations,
+                    MIN(price)::double precision
+                        AS min_price,
+                    MAX(price)::double precision
+                        AS max_price,
+                    ROUND(
+                        AVG(price), 3
+                    )::double precision
+                        AS average_price
+
+                FROM latest
+
+                WHERE reported_at >=
+                    NOW() - INTERVAL '7 days'
+
+                GROUP BY fuel_type
+
+                ORDER BY fuel_type
+            """)
+
+            items = cur.fetchall()
+
+    return {
+        "status": "ok",
+        "total_reports": total,
+        "freshness_days": 7,
+        "currency": "CHF",
+        "unit": "liter",
+        "items": items
+    }
