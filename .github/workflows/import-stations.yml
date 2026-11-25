@@ -1,0 +1,32 @@
+
+name: Import stations Suisse
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swiss-fuel-import
+  cancel-in-progress: false
+
+jobs:
+  import-stations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Recuperer le depot
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Importer les stations suisses
+        env:
+          API_URL: https://swiss-fuel-price-api.onrender.com
+          IMPORT_SECRET: ${{ secrets.IMPORT_SECRET }}
+        run: python import_stations.py
