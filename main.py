@@ -1,14 +1,13 @@
 
 import os
-import json
 import hmac
 import logging
-import urllib.request
-import urllib.parse
 
 import psycopg
 from psycopg.rows import dict_row
 from fastapi import FastAPI, HTTPException, Header
+from pydantic import BaseModel, Field
+from typing import Literal
 
 
 logging.basicConfig(level=logging.INFO)
@@ -17,14 +16,8 @@ logger = logging.getLogger("swiss-fuel-price")
 app = FastAPI(
     title="Swiss Fuel Price API",
     description="API suisse de comparaison des prix du carburant",
-    version="0.4.0",
+    version="0.5.0",
 )
-
-OVERPASS_SERVERS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
-]
 
 
 def get_database_url():
@@ -57,6 +50,8 @@ def init_db():
                     city VARCHAR(100),
                     latitude DOUBLE PRECISION,
                     longitude DOUBLE PRECISION,
+                    osm_id BIGINT,
+                    osm_type TEXT,
                     created_at TIMESTAMP
                         DEFAULT CURRENT_TIMESTAMP
                 )
@@ -84,11 +79,63 @@ def init_db():
             """)
 
 
+class StationImport(BaseModel):
+
+    osm_id: int = Field(gt=0)
+
+    osm_type: Literal[
+        "node", "way", "relation"
+    ]
+
+    name: str = Field(
+        min_length=1,
+        max_length=200
+    )
+
+    brand: str | None = Field(
+        default=None,
+        max_length=100
+    )
+
+    address: str | None = Field(
+        default=None,
+        max_length=250
+    )
+
+    postal_code: str | None = Field(
+        default=None,
+        max_length=10
+    )
+
+    city: str | None = Field(
+        default=None,
+        max_length=100
+    )
+
+    latitude: float = Field(
+        ge=-90,
+        le=90
+    )
+
+    longitude: float = Field(
+        ge=-180,
+        le=180
+    )
+
+
+class ImportBatch(BaseModel):
+
+    stations: list[StationImport] = Field(
+        min_length=1,
+        max_length=100
+    )
+
+
 @app.get("/")
 def home():
     return {
         "app": "Swiss Fuel Price",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "status": "online",
         "message": "Bienvenue sur Swiss Fuel Price"
     }
@@ -96,9 +143,7 @@ def home():
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok"
-    }
+    return {"status": "ok"}
 
 
 @app.get("/api/v1/database/health")
@@ -121,7 +166,8 @@ def database_health():
         }
 
     except Exception:
-        logger.exception("Connexion PostgreSQL impossible")
+
+        logger.exception("Erreur PostgreSQL")
 
         raise HTTPException(
             status_code=503,
@@ -144,15 +190,9 @@ def list_stations():
             with conn.cursor() as cur:
 
                 cur.execute("""
-                    SELECT
-                        id,
-                        name,
-                        brand,
-                        address,
-                        postal_code,
-                        city,
-                        latitude,
-                        longitude
+                    SELECT id, name, brand,
+                           address, postal_code,
+                           city, latitude, longitude
                     FROM stations
                     ORDER BY name, id
                 """)
@@ -162,128 +202,70 @@ def list_stations():
         return {
             "items": items,
             "total": len(items),
-            "message": "Stations recuperees depuis PostgreSQL"
+            "source": "OpenStreetMap",
+            "attribution":
+                "© OpenStreetMap contributors",
+            "message":
+                "Stations recuperees depuis PostgreSQL"
         }
 
     except HTTPException:
         raise
 
     except Exception:
+
         logger.exception("Erreur lecture stations")
 
         raise HTTPException(
             status_code=500,
-            detail="Erreur de lecture PostgreSQL"
+            detail="Erreur lecture PostgreSQL"
         )
 
 
-def fetch_osm_stations():
+@app.get("/api/v1/stations/count")
+def count_stations():
 
-    query = """
-    [out:json][timeout:40];
+    try:
+        init_db()
 
-    area["ISO3166-1"="CH"]
-        ["admin_level"="2"]->.ch;
+        with psycopg.connect(
+            get_database_url(),
+            connect_timeout=10
+        ) as conn:
 
-    (
-        node["amenity"="fuel"](area.ch);
-        way["amenity"="fuel"](area.ch);
-        relation["amenity"="fuel"](area.ch);
-    );
+            with conn.cursor() as cur:
 
-    out center tags;
-    """
-
-    data = urllib.parse.urlencode({
-        "data": query
-    }).encode("utf-8")
-
-    errors = []
-
-    for server in OVERPASS_SERVERS:
-
-        try:
-            logger.info(
-                "Tentative Overpass : %s",
-                server
-            )
-
-            request = urllib.request.Request(
-                server,
-                data=data,
-                headers={
-                    "User-Agent": "SwissFuelPrice/0.4.0",
-                    "Content-Type":
-                        "application/x-www-form-urlencoded",
-                    "Accept": "application/json"
-                }
-            )
-
-            with urllib.request.urlopen(
-                request,
-                timeout=55
-            ) as response:
-
-                result = json.loads(
-                    response.read().decode("utf-8")
+                cur.execute(
+                    "SELECT COUNT(*) FROM stations"
                 )
 
-            if result.get("remark"):
-                raise ValueError(
-                    "Reponse Overpass incomplete"
-                )
+                total = cur.fetchone()[0]
 
-            elements = result.get("elements")
-
-            if not isinstance(elements, list):
-                raise ValueError(
-                    "Reponse Overpass invalide"
-                )
-
-            if not elements:
-                raise ValueError(
-                    "Aucune station recue"
-                )
-
-            logger.info(
-                "%s objets recus depuis %s",
-                len(elements),
-                server
-            )
-
-            return elements, server
-
-        except Exception as error:
-
-            logger.warning(
-                "Echec Overpass %s : %s",
-                server,
-                str(error)
-            )
-
-            errors.append({
-                "server": server,
-                "error": type(error).__name__
-            })
-
-    raise HTTPException(
-        status_code=503,
-        detail={
-            "message":
-                "Tous les serveurs Overpass sont inaccessibles",
-            "attempts": errors
+        return {
+            "status": "ok",
+            "total": total
         }
-    )
+
+    except Exception:
+
+        logger.exception("Erreur comptage stations")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur comptage stations"
+        )
 
 
 @app.post("/api/v1/import/stations")
 def import_stations(
+    batch: ImportBatch,
     x_import_key: str = Header(default="")
 ):
 
     secret = os.getenv("IMPORT_SECRET")
 
     if not secret:
+
         raise HTTPException(
             status_code=503,
             detail="IMPORT_SECRET non configure"
@@ -293,6 +275,7 @@ def import_stations(
         x_import_key.encode("utf-8"),
         secret.encode("utf-8")
     ):
+
         raise HTTPException(
             status_code=403,
             detail="Cle importation incorrecte"
@@ -301,11 +284,6 @@ def import_stations(
     try:
         init_db()
 
-        elements, server = fetch_osm_stations()
-
-        imported = 0
-        skipped = 0
-
         with psycopg.connect(
             get_database_url(),
             connect_timeout=10
@@ -313,64 +291,7 @@ def import_stations(
 
             with conn.cursor() as cur:
 
-                for element in elements:
-
-                    tags = element.get("tags", {})
-
-                    osm_id = element.get("id")
-                    osm_type = element.get("type")
-
-                    name = (
-                        tags.get("name")
-                        or tags.get("brand")
-                        or tags.get("operator")
-                        or "Station sans nom"
-                    )
-
-                    brand = tags.get("brand")
-
-                    if osm_type == "node":
-
-                        latitude = element.get("lat")
-                        longitude = element.get("lon")
-
-                    else:
-
-                        center = element.get("center", {})
-
-                        latitude = center.get("lat")
-                        longitude = center.get("lon")
-
-                    if (
-                        osm_id is None
-                        or osm_type not in (
-                            "node", "way", "relation"
-                        )
-                        or latitude is None
-                        or longitude is None
-                    ):
-                        skipped += 1
-                        continue
-
-                    address_parts = [
-                        tags.get("addr:street"),
-                        tags.get("addr:housenumber")
-                    ]
-
-                    address = " ".join(
-                        part for part in address_parts
-                        if part
-                    ) or None
-
-                    postal_code = tags.get(
-                        "addr:postcode"
-                    )
-
-                    city = (
-                        tags.get("addr:city")
-                        or tags.get("addr:town")
-                        or tags.get("addr:village")
-                    )
+                for station in batch.stations:
 
                     cur.execute("""
                         INSERT INTO stations (
@@ -385,8 +306,9 @@ def import_stations(
                             longitude
                         )
                         VALUES (
-                            %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s
+                            %s, %s, %s,
+                            %s, %s, %s,
+                            %s, %s, %s
                         )
                         ON CONFLICT (osm_type, osm_id)
                         DO UPDATE SET
@@ -398,19 +320,16 @@ def import_stations(
                             latitude = EXCLUDED.latitude,
                             longitude = EXCLUDED.longitude
                     """, (
-                        osm_id,
-                        osm_type,
-                        name[:200],
-                        brand[:100] if brand else None,
-                        address[:250] if address else None,
-                        postal_code[:10]
-                            if postal_code else None,
-                        city[:100] if city else None,
-                        latitude,
-                        longitude
+                        station.osm_id,
+                        station.osm_type,
+                        station.name,
+                        station.brand,
+                        station.address,
+                        station.postal_code,
+                        station.city,
+                        station.latitude,
+                        station.longitude
                     ))
-
-                    imported += 1
 
                 cur.execute(
                     "SELECT COUNT(*) FROM stations"
@@ -418,28 +337,28 @@ def import_stations(
 
                 total = cur.fetchone()[0]
 
+        imported = len(batch.stations)
+
         logger.info(
-            "Importation terminee : %s stations",
-            imported
+            "Lot traite : %s stations. Total : %s",
+            imported,
+            total
         )
 
         return {
             "status": "ok",
-            "source": "OpenStreetMap",
-            "server": server,
             "imported": imported,
-            "skipped": skipped,
-            "total": total,
-            "message": "Importation terminee"
+            "total": total
         }
 
     except HTTPException:
         raise
 
     except Exception:
-        logger.exception("Erreur importation stations")
+
+        logger.exception("Erreur importation")
 
         raise HTTPException(
             status_code=500,
-            detail="Erreur importation. Consulter les logs Render."
+            detail="Erreur importation PostgreSQL"
         )
