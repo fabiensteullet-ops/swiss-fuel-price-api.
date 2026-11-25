@@ -5,7 +5,7 @@ import logging
 
 import psycopg
 from psycopg.rows import dict_row
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -13,10 +13,12 @@ from typing import Literal
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("swiss-fuel-price")
 
+VERSION = "0.6.0"
+
 app = FastAPI(
     title="Swiss Fuel Price API",
     description="API suisse de comparaison des prix du carburant",
-    version="0.5.0",
+    version=VERSION,
 )
 
 
@@ -135,7 +137,7 @@ class ImportBatch(BaseModel):
 def home():
     return {
         "app": "Swiss Fuel Price",
-        "version": "0.5.0",
+        "version": VERSION,
         "status": "online",
         "message": "Bienvenue sur Swiss Fuel Price"
     }
@@ -246,6 +248,9 @@ def count_stations():
             "total": total
         }
 
+    except HTTPException:
+        raise
+
     except Exception:
 
         logger.exception("Erreur comptage stations")
@@ -253,6 +258,129 @@ def count_stations():
         raise HTTPException(
             status_code=500,
             detail="Erreur comptage stations"
+        )
+
+
+@app.get("/api/v1/stations/nearby")
+def nearby_stations(
+    latitude: float = Query(..., ge=-90, le=90),
+    longitude: float = Query(..., ge=-180, le=180),
+    radius_km: float = Query(10, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=200),
+    brand: str | None = Query(None, max_length=100)
+):
+
+    try:
+
+        with psycopg.connect(
+            get_database_url(),
+            row_factory=dict_row,
+            connect_timeout=10
+        ) as conn:
+
+            with conn.cursor() as cur:
+
+                cur.execute("""
+                    WITH distances AS (
+                        SELECT
+                            id,
+                            name,
+                            brand,
+                            address,
+                            postal_code,
+                            city,
+                            latitude,
+                            longitude,
+
+                            6371.0088 * 2 * ASIN(
+                                SQRT(
+                                    LEAST(
+                                        1.0,
+                                        GREATEST(
+                                            0.0,
+                                            POWER(
+                                                SIN(
+                                                    RADIANS(
+                                                        latitude - %s
+                                                    ) / 2
+                                                ), 2
+                                            )
+                                            +
+                                            COS(RADIANS(%s))
+                                            *
+                                            COS(RADIANS(latitude))
+                                            *
+                                            POWER(
+                                                SIN(
+                                                    RADIANS(
+                                                        longitude - %s
+                                                    ) / 2
+                                                ), 2
+                                            )
+                                        )
+                                    )
+                                )
+                            ) AS distance_km
+
+                        FROM stations
+
+                        WHERE latitude BETWEEN -90 AND 90
+                        AND longitude BETWEEN -180 AND 180
+                        AND (
+                            %s::text IS NULL
+                            OR LOWER(brand) = LOWER(%s::text)
+                        )
+                    )
+
+                    SELECT *
+                    FROM distances
+                    WHERE distance_km <= %s
+                    ORDER BY distance_km ASC, id ASC
+                    LIMIT %s
+
+                """, (
+                    latitude,
+                    latitude,
+                    longitude,
+                    brand,
+                    brand,
+                    radius_km,
+                    limit
+                ))
+
+                items = cur.fetchall()
+
+        for station in items:
+            station["distance_km"] = round(
+                station["distance_km"], 3
+            )
+
+        return {
+            "status": "ok",
+            "position": {
+                "latitude": latitude,
+                "longitude": longitude
+            },
+            "radius_km": radius_km,
+            "distance_type": "straight_line",
+            "brand": brand,
+            "total": len(items),
+            "items": items,
+            "source": "OpenStreetMap",
+            "attribution":
+                "© OpenStreetMap contributors"
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+
+        logger.exception("Erreur recherche GPS")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur recherche stations GPS"
         )
 
 
