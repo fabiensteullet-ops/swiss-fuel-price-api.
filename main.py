@@ -11,7 +11,7 @@ import psycopg
 from psycopg.rows import dict_row
 from fastapi import FastAPI, HTTPException, Header, Query
 from pydantic import BaseModel, Field
-
+from fastapi.middleware.cors import CORSMiddleware
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('swiss-fuel-price')
 app = FastAPI(title='Swiss Fuel Price API', description='API suisse de comparaison des prix du carburant', version='0.9.0')
