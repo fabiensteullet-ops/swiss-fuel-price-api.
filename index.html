@@ -1,1 +1,586 @@
-Swiss Fuel Price 1.0.0 - Web interface
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#14532d">
+<title>Swiss Fuel Price</title>
+
+<link rel="stylesheet"
+ href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #f1f5f9;
+  color: #172033;
+  font-family: Arial, sans-serif;
+}
+header {
+  background: #14532d;
+  color: white;
+  padding: 20px;
+}
+header h1 { margin: 0; font-size: 25px; }
+header p { margin: 8px 0 0; }
+main { max-width: 900px; margin: auto; padding: 12px; }
+.panel {
+  background: white;
+  border-radius: 14px;
+  padding: 15px;
+  margin-bottom: 12px;
+  box-shadow: 0 2px 8px #00000010;
+}
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+label {
+  display: block;
+  font-size: 13px;
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+input, select {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 16px;
+}
+button {
+  width: 100%;
+  border: 0;
+  border-radius: 9px;
+  background: #15803d;
+  color: white;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: bold;
+  margin-top: 10px;
+  cursor: pointer;
+}
+button:disabled { opacity: .5; }
+.secondary { background: #334155; }
+#map {
+  height: 420px;
+  border-radius: 12px;
+}
+.station {
+  padding: 14px;
+  background: white;
+  border-radius: 12px;
+  border-left: 5px solid #64748b;
+  margin-bottom: 10px;
+}
+.station h3 { margin: 0 0 8px; }
+.cost {
+  font-size: 25px;
+  font-weight: bold;
+  margin: 10px 0;
+}
+.small { font-size: 13px; color: #64748b; }
+#status { line-height: 1.5; }
+.legend { font-size: 12px; line-height: 2; }
+footer {
+  text-align: center;
+  padding: 20px;
+  font-size: 12px;
+  color: #64748b;
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <h1>🇨🇭 Swiss Fuel Price</h1>
+  <p>Le plein au meilleur coût</p>
+  <small>Interface 1.0.0</small>
+</header>
+
+<main>
+
+<section class="panel">
+  <strong id="stationCount">Chargement des stations...</strong>
+  <button class="secondary" id="gps">
+    📍 Me localiser
+  </button>
+  <p id="status" role="status">
+    Activez votre GPS pour lancer une recherche.
+  </p>
+</section>
+
+<section class="panel">
+
+<div class="grid">
+  <div>
+    <label for="fuel">Carburant</label>
+    <select id="fuel">
+      <option value="SP95">Essence SP95</option>
+      <option value="SP98">Essence SP98</option>
+      <option value="DIESEL">Diesel</option>
+    </select>
+  </div>
+
+  <div>
+    <label for="liters">Quantité (litres)</label>
+    <input id="liters" type="number"
+      value="50" min="1" max="200">
+  </div>
+
+  <div>
+    <label for="consumption">Consommation L/100 km</label>
+    <input id="consumption" type="number"
+      value="6.5" min="0.1" max="50" step="0.1">
+  </div>
+
+  <div>
+    <label for="radius">Rayon de recherche</label>
+    <select id="radius">
+      <option value="5">5 km</option>
+      <option value="10" selected>10 km</option>
+      <option value="20">20 km</option>
+      <option value="30">30 km</option>
+      <option value="50">50 km</option>
+      <option value="100">100 km</option>
+    </select>
+  </div>
+</div>
+
+<button id="compare">
+  🔍 Trouver la station la plus économique
+</button>
+
+</section>
+
+<section class="panel">
+  <div id="map"></div>
+  <div class="legend">
+    🟢 Économique · 🟠 Intermédiaire · 🔴 Plus chère
+    <br>
+    ⚪ Non classée · 🔵 Votre position
+  </div>
+  <div class="small">
+    Couleurs selon le coût total des résultats comparés.
+    Touchez une station pour consulter ou signaler un prix.
+  </div>
+</section>
+
+<h2>Classement économique</h2>
+<div id="results">
+  Lancez une recherche pour afficher les résultats.
+</div>
+
+<section class="panel" id="reportPanel">
+  <h2>Actualiser un prix</h2>
+
+  <form id="priceForm">
+    <label for="stationId">Identifiant de la station</label>
+    <input id="stationId" type="number" min="1" required>
+
+    <p>
+      <label for="reportFuel">Carburant</label>
+      <select id="reportFuel">
+        <option value="SP95">SP95</option>
+        <option value="SP98">SP98</option>
+        <option value="DIESEL">Diesel</option>
+      </select>
+    </p>
+
+    <label for="price">Prix observé (CHF/litre)</label>
+    <input id="price" type="number"
+      min="0.5" max="5" step="0.001"
+      placeholder="1.750" required>
+
+    <button id="sendPrice" type="submit">
+      Enregistrer le prix
+    </button>
+  </form>
+
+  <p id="reportStatus" role="status"></p>
+  <p class="small">
+    Saisissez uniquement un prix réellement observé.
+    Les contributions ne sont pas encore vérifiées.
+  </p>
+</section>
+
+</main>
+
+<footer>
+  Swiss Fuel Price 1.0.0<br>
+  © OpenStreetMap contributors · OSRM
+</footer>
+
+<script>
+const API = window.location.origin + "/api/v1";
+const el = id => document.getElementById(id);
+
+let position = null;
+let userMarker = null;
+let stations = [];
+let ranked = new Map();
+let markers = new Map();
+let searching = false;
+
+const map = L.map("map", {
+  preferCanvas: true
+}).setView([46.82, 8.23], 8);
+
+L.tileLayer(
+  "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors"
+  }
+).addTo(map);
+
+const stationLayer = L.layerGroup().addTo(map);
+
+function status(message) {
+  el("status").textContent = message;
+}
+
+function money(value) {
+  return Number(value).toFixed(2) + " CHF";
+}
+
+async function request(path, options = {}) {
+  const response = await fetch(API + path, options);
+
+  if (!response.ok) {
+    throw new Error("Erreur API : " + response.status);
+  }
+
+  return await response.json();
+}
+
+function stationColor(id) {
+  const item = ranked.get(id);
+
+  if (!item) return "#94a3b8";
+  if (item.rank === 1) return "#16a34a";
+  if (item.rank === ranked.size) return "#dc2626";
+
+  return "#f59e0b";
+}
+
+function popup(station) {
+  const box = document.createElement("div");
+  const name = document.createElement("strong");
+
+  name.textContent = station.name;
+  box.appendChild(name);
+
+  const address = document.createElement("p");
+  address.textContent = [
+    station.address, station.city
+  ].filter(Boolean).join(", ");
+
+  box.appendChild(address);
+
+  const item = ranked.get(station.id);
+  const info = document.createElement("p");
+
+  info.textContent = item
+    ? money(item.price) + "/L — Total : " +
+      money(item.total_cost)
+    : "Station non classée";
+
+  box.appendChild(info);
+
+  const button = document.createElement("button");
+  button.textContent = "Actualiser le prix";
+
+  button.onclick = () => {
+    el("stationId").value = station.id;
+    el("reportFuel").value = el("fuel").value;
+    el("reportPanel").scrollIntoView({
+      behavior: "smooth"
+    });
+  };
+
+  box.appendChild(button);
+  return box;
+}
+
+function drawStations() {
+  stationLayer.clearLayers();
+  markers.clear();
+
+  for (const station of stations) {
+    if (!Number.isFinite(station.latitude) ||
+        !Number.isFinite(station.longitude)) continue;
+
+    const color = stationColor(station.id);
+
+    const marker = L.circleMarker(
+      [station.latitude, station.longitude],
+      {
+        radius: ranked.has(station.id) ? 8 : 5,
+        color: color,
+        fillColor: color,
+        fillOpacity: 0.85,
+        weight: 1
+      }
+    ).addTo(stationLayer);
+
+    marker.bindPopup(() => popup(station));
+    markers.set(station.id, marker);
+  }
+}
+
+async function loadStations() {
+  try {
+    const data = await request("/stations");
+    stations = data.items || [];
+
+    el("stationCount").textContent =
+      data.total + " stations référencées";
+
+    drawStations();
+  } catch (error) {
+    el("stationCount").textContent =
+      "Impossible de charger les stations";
+    status(error.message);
+  }
+}
+
+function locate(autoCompare = false) {
+  if (!navigator.geolocation) {
+    status("GPS indisponible sur ce navigateur.");
+    return;
+  }
+
+  status("Recherche de votre position...");
+
+  navigator.geolocation.getCurrentPosition(
+    result => {
+      position = {
+        latitude: result.coords.latitude,
+        longitude: result.coords.longitude
+      };
+
+      const coords = [
+        position.latitude,
+        position.longitude
+      ];
+
+      if (userMarker) map.removeLayer(userMarker);
+
+      userMarker = L.circleMarker(coords, {
+        radius: 10,
+        color: "#2563eb",
+        fillColor: "#2563eb",
+        fillOpacity: 1
+      }).addTo(map).bindPopup("Votre position");
+
+      map.setView(coords, 13);
+      status("Position GPS trouvée.");
+
+      if (autoCompare) compare();
+    },
+    () => {
+      status(
+        "GPS indisponible. Autorisez la localisation " +
+        "dans Chrome, puis réessayez."
+      );
+    },
+    {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 30000
+    }
+  );
+}
+
+async function compare() {
+  if (searching) return;
+
+  if (!position) {
+    locate(true);
+    return;
+  }
+
+  const liters = Number(el("liters").value);
+  const consumption = Number(el("consumption").value);
+
+  if (!(liters > 0 && liters <= 200) ||
+      !(consumption > 0 && consumption <= 50)) {
+    status("Vérifiez la quantité et la consommation.");
+    return;
+  }
+
+  searching = true;
+  el("compare").disabled = true;
+
+  ranked.clear();
+  drawStations();
+  el("results").textContent = "Calcul en cours...";
+  status("Calcul des trajets et des coûts...");
+
+  const params = new URLSearchParams({
+    latitude: position.latitude,
+    longitude: position.longitude,
+    fuel_type: el("fuel").value,
+    radius_km: el("radius").value,
+    liters: liters,
+    consumption: consumption,
+    freshness_days: 7,
+    limit: 200
+  });
+
+  try {
+    const data = await request(
+      "/stations/cheapest?" + params.toString()
+    );
+
+    const items = data.items || [];
+
+    ranked = new Map(
+      items.map(item => [item.id, item])
+    );
+
+    drawStations();
+    renderResults(items, data);
+
+    status(items.length +
+      " stations comparées — " +
+      (data.distance_type === "road"
+        ? "Itinéraires routiers OSRM"
+        : "Distances estimées hors routage"));
+
+  } catch (error) {
+    status(error.message);
+    el("results").textContent =
+      "Comparaison indisponible. Réessayez.";
+  } finally {
+    searching = false;
+    el("compare").disabled = false;
+  }
+}
+
+function renderResults(items, data) {
+  const container = el("results");
+  container.replaceChildren();
+
+  if (!items.length) {
+    container.textContent =
+      "Aucune station avec un prix récent " +
+      "et un trajet exploitable dans ce rayon.";
+    return;
+  }
+
+  for (const item of items) {
+    const card = document.createElement("article");
+    card.className = "station";
+    card.style.borderLeftColor = stationColor(item.id);
+
+    function line(text, className = "") {
+      const p = document.createElement("div");
+      p.className = className;
+      p.textContent = text;
+      card.appendChild(p);
+    }
+
+    const title = document.createElement("h3");
+    title.textContent =
+      "#" + item.rank + " — " + item.name;
+    card.appendChild(title);
+
+    line(item.rank === 1
+      ? "🏆 Meilleur coût parmi les résultats"
+      : "");
+
+    line(money(item.total_cost), "cost");
+    line("Carburant : " +
+      Number(item.price).toFixed(3) + " CHF/L");
+    line("Plein : " + money(item.fill_cost));
+    line("Déplacement : " + money(item.trip_cost));
+    line("Distance aller-retour : " +
+      Number(item.round_trip_km).toFixed(2) + " km");
+
+    if (item.round_trip_minutes != null) {
+      line("Temps aller-retour estimé : " +
+        Number(item.round_trip_minutes).toFixed(1) +
+        " min");
+    }
+
+    const saving = Number(item.savings_vs_nearest);
+
+    if (Number.isFinite(saving)) {
+      line(saving >= 0
+        ? "Économie : " + money(saving)
+        : "Surcoût : " + money(-saving));
+      line("Par rapport à la station de référence",
+        "small");
+    }
+
+    line("Prix signalé : " +
+      new Date(item.reported_at).toLocaleString("fr-CH"),
+      "small");
+
+    line(item.verified
+      ? "Prix vérifié"
+      : "Prix communautaire non vérifié", "small");
+
+    const button = document.createElement("button");
+    button.textContent = "Voir sur la carte";
+    button.onclick = () => {
+      map.setView([item.latitude, item.longitude], 16);
+      el("map").scrollIntoView({behavior: "smooth"});
+      markers.get(item.id)?.openPopup();
+    };
+
+    card.appendChild(button);
+    container.appendChild(card);
+  }
+}
+
+el("priceForm").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const button = el("sendPrice");
+  button.disabled = true;
+  el("reportStatus").textContent = "Enregistrement...";
+
+  try {
+    await request("/prices", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        station_id: Number(el("stationId").value),
+        fuel_type: el("reportFuel").value,
+        price: Number(el("price").value)
+      })
+    });
+
+    el("reportStatus").textContent =
+      "Prix enregistré avec succès.";
+    el("price").value = "";
+
+    if (position) compare();
+
+  } catch (error) {
+    el("reportStatus").textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+el("gps").onclick = () => locate();
+el("compare").onclick = compare;
+
+loadStations();
+locate();
+
+</script>
+</body>
+</html>
