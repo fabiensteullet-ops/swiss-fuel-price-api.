@@ -1,0 +1,29 @@
+name: Import fuel prices
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  import-prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Import fuel prices
+        env:
+          PRICE_SOURCE_URL: ${{ secrets.PRICE_SOURCE_URL }}
+          PRICE_SOURCE_TOKEN: ${{ secrets.PRICE_SOURCE_TOKEN }}
+        run: python import_prices.py
