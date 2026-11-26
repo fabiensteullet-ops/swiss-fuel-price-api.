@@ -16,6 +16,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('swiss-fuel-price')
 app = FastAPI(title='Swiss Fuel Price API', description='API suisse de comparaison des prix du carburant', version='0.9.0')
 FuelType = Literal['SP95', 'SP98', 'DIESEL']
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://fabiensteullet-ops.github.io"
+    ],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 ATTR = '© OpenStreetMap contributors'
 COLS = 'id, name, brand, address, postal_code, city, latitude, longitude'
 
