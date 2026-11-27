@@ -209,6 +209,39 @@ footer {
 
 <p id="ocrStatus" role="status"></p>
 
+<div id="multiPrices" hidden
+     style="background:#f0fdf4;padding:15px;
+     border-radius:12px;margin:15px 0;">
+
+  <h3>Prix détectés par la photo</h3>
+
+  <label for="ocr95">Essence SP95</label>
+  <input id="ocr95" type="number"
+         min="0.5" max="4" step="0.001"
+         placeholder="CHF/L">
+
+  <label for="ocr98">Essence SP98</label>
+  <input id="ocr98" type="number"
+         min="0.5" max="4" step="0.001"
+         placeholder="CHF/L">
+
+  <label for="ocrDiesel">Diesel</label>
+  <input id="ocrDiesel" type="number"
+         min="0.5" max="4" step="0.001"
+         placeholder="CHF/L">
+
+  <p>Vérifiez les prix et la station
+     avant de confirmer.</p>
+
+  <button type="button" id="saveMultiPrices"
+          style="background:#15803d;color:white;">
+    Enregistrer tous les prix
+  </button>
+
+  <p id="multiStatus" role="status"></p>
+
+</div>
+
   <form id="priceForm">
     <label for="stationId">Identifiant de la station</label>
     <input id="stationId" type="number" min="1" required>
