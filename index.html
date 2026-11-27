@@ -195,6 +195,20 @@ footer {
 <section class="panel" id="reportPanel">
   <h2>Actualiser un prix</h2>
 
+<button type="button" id="takePhoto"
+  style="background:#15803d;color:white;width:100%;margin-bottom:12px;"
+  onclick="document.getElementById('fuelPhoto').click()">
+  📸 Photographier les prix
+</button>
+
+<input type="file"
+  id="fuelPhoto"
+  accept="image/*"
+  capture="environment"
+  hidden>
+
+<p id="ocrStatus" role="status"></p>
+
   <form id="priceForm">
     <label for="stationId">Identifiant de la station</label>
     <input id="stationId" type="number" min="1" required>
