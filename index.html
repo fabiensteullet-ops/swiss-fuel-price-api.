@@ -689,24 +689,65 @@ const prices = [...new Set(
   .map(p => p.toFixed(3))
 )];
 
+
 document.getElementById("price").value = "";
 
-if (prices.length === 0) {
-  status.textContent =
-    "Aucun prix détecté. Texte lu : " +
+const fields = {
+  ocr95: /\b(?:SP\s*95|95)\b/i,
+  ocr98: /\b(?:SP\s*98|98)\b/i,
+  ocrDiesel: /\b(?:DIESEL|GAZOLE)\b/i
+};
+
+document.getElementById("multiPrices").hidden = true;
+
+for (const id of Object.keys(fields)) {
+  document.getElementById(id).value = "";
+}
+
+const lines = text.split(/\r?\n/);
+
+for (const [id, pattern] of Object.entries(fields)) {
+  const candidates = new Set();
+
+  for (const line of lines) {
+    if (!pattern.test(line)) continue;
+
+    const remaining = line.replace(pattern, "");
+    const found = remaining.match(
+      /\b\d[., \t]\d{2,3}\b|\b\d{3,4}\b/g
+    ) || [];
+
+    for (let p of found) {
+      p = p.trim().replace(",", ".");
+
+      if (/^\d{3,4}$/.test(p)) {
+        p = p[0] + "." + p.slice(1);
+      } else {
+        p = p.replace(/[ \t]+/g, ".");
+      }
+
+      const n = Number(p);
+
+      if (n >= 0.5 && n <= 4) {
+        candidates.add(n.toFixed(3));
+      }
+    }
+  }
+
+  if (candidates.size === 1) {
+    document.getElementById(id).value =
+      [...candidates][0];
+  }
+}
+
+document.getElementById("multiPrices").hidden = false;
+
+status.textContent = prices.length
+  ? "Prix possibles : " + prices.join(" / ") +
+    " CHF/L. Vérifiez les carburants et les prix."
+  : "Aucun prix détecté. Texte lu : " +
     (text.trim() || "Aucun texte");
-  return;
-}
 
-status.textContent =
-  "Prix possibles : " +
-  prices.join(" / ") +
-  " CHF/L. Vérifiez le prix et le carburant.";
-
-if (prices.length === 1) {
-  document.getElementById("price").value =
-    prices[0];
-}
 
   } catch (error) {
     status.textContent =
